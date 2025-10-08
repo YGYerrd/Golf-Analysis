@@ -8,8 +8,10 @@ from .config import CANDIDATE_NUMERIC, UNIT_PATTERNS
 _UNIT_RE = re.compile("|".join(UNIT_PATTERNS), flags=re.IGNORECASE)
 
 def load_csv(path: str) -> pd.DataFrame:
-    return pd.read_csv(path)
-
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    except UnicodeError:
+        return pd.read_csv(path)
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
