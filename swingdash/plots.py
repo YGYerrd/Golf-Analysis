@@ -6,6 +6,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 
 
 def _format_float(value: float | int | None, *, decimals: int = 2, suffix: str = "") -> str:
@@ -134,4 +135,77 @@ def render_table(title: str, table: pd.DataFrame, *, height: Optional[int] = Non
     if table is None or table.empty:
         st.info("No data available for this section.")
         return
-    st.dataframe(table, use_container_width=True, height=height)
+    if height is None:
+        st.dataframe(table, use_container_width=True, height="auto")
+    else:
+        st.dataframe(table, use_container_width=True, height=height)
+
+
+
+def scatter(
+    df: pd.DataFrame,
+    x: str,
+    y: str,
+    color_by: str,
+    hover_cols = None,
+    height: int = 520
+):
+    fig = px.scatter(
+        df, x=x, y=y, color=color_by,
+        hover_data=[c for c in (hover_cols or []) if c in df.columns],
+        opacity=0.75, template="plotly_white"
+    )
+    fig.update_layout(height=height)
+    return fig
+
+def histogram(
+    df: pd.DataFrame, metric: str, bins: int = 30, height: int = 460
+):
+    fig = px.histogram(df, x=metric, color="Session",
+                       barmode="overlay", nbins=bins, opacity=0.55,
+                       template="plotly_white")
+    fig.update_layout(height=height)
+    return fig
+
+def box_deviation(df: pd.DataFrame, acc_col: str, height: int = 460, ytitle: str | None = None):
+    fig = px.box(df.dropna(subset=[acc_col]), x="Session", y=acc_col,
+                 points="outliers", template="plotly_white")
+    fig.update_layout(height=height, yaxis_title=ytitle or acc_col)
+    return fig
+
+def bar_side_counts(df_counts: pd.DataFrame, height: int = 420):
+    # expects columns: Session | Side | Count
+    fig = px.bar(df_counts, x="Session", y="Count", color="Side",
+                 barmode="stack", template="plotly_white",
+                 category_orders={"Side": ["Left","Straight","Right"]})
+    fig.update_layout(height=height, title="Counts by side")
+    return fig
+
+def scatter_face_vs_path(df: pd.DataFrame, height: int = 520):
+    fig = px.scatter(
+        df, x="Club Path", y="Club Face",
+        color="Side", symbol="Session",
+        hover_data=[c for c in ["Face to Path","Carry Distance","Total Distance","Spin Axis"] if c in df.columns],
+        template="plotly_white", opacity=0.8
+    )
+    fig.update_layout(height=height, title="Club Face vs Club Path (quadrants)")
+    fig.add_hline(y=0, line_dash="dash")
+    fig.add_vline(x=0, line_dash="dash")
+    return fig
+
+def box_by_side(df: pd.DataFrame, metric: str, height: int = 460):
+    fig = px.box(
+        df.dropna(subset=[metric]), x="Side", y=metric, color="Session",
+        points="outliers", template="plotly_white",
+        category_orders={"Side": ["Left","Straight","Right"]}
+    )
+    fig.update_layout(height=height, title=f"{metric} distribution by side")
+    return fig
+
+def group_box(df: pd.DataFrame, y_metric: str, height: int = 460):
+    fig = px.box(
+        df.dropna(subset=[y_metric]), x="Group", y=y_metric,
+        color="Session", points="outliers", template="plotly_white"
+    )
+    fig.update_layout(height=height, yaxis_title=y_metric)
+    return fig

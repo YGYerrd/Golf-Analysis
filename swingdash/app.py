@@ -1,258 +1,133 @@
-"""Streamlit application for analysing and comparing golf sessions."""
-from __future__ import annotations
-
-from collections import OrderedDict
-from pathlib import Path
-from typing import Mapping
-
 import pandas as pd
 import streamlit as st
 
-from swingdash.analytics import compare_sessions, describe_session
-from swingdash.cleaning import add_side_column, iqr_filter, load_csv, preprocess
-from swingdash.config import KEY_METRICS
-from swingdash.plots import (
-    make_comparison_table,
-    make_session_summary_table,
-    make_shot_count_table,
-    make_shot_table,
-    render_table,
-)
-from swingdash.standardise import balance_samples
-from swingdash.ui import (
-    SessionSelection,
-    render_app_header,
-    render_sidebar_filters,
-    render_sidebar_session_inputs,
-)
+from config import KEY_METRICS  # keep your config central if you like
+from analytics import describe_session, compare_sessions, balance_samples, kpi_series_for_metrics
+from cleaning import preprocess, iqr_filter
+from ui import render_table, render_kpi_tiles
+import plots 
 
-SHOT_TABLE_METRICS = [
-    "Club Speed",
-    "Ball Speed",
-    "Launch Angle",
-    "Spin Rate",
-    "Carry Distance",
-    "Total Distance",
-    "Carry Deviation Distance",
-    "Total Deviation Distance",
-    "|Carry Dev|",
-    "|Total Dev|",
-]
+st.set_page_config(page_title="Swing Progress Dashboard", layout="wide")
+st.title("Swing Progress Dashboard")
 
+# --- Uploads
+c1, c2 = st.columns(2)
+with c1: f_old = st.file_uploader("Upload OLD session CSV", type=["csv"], key="old")
+with c2: f_new = st.file_uploader("Upload NEW session CSV", type=["csv"], key="new")
+if not f_old or not f_new:
+    st.info("Upload two CSVs to begin.")
+    st.stop()
 
-def _discover_default_sessions() -> Mapping[str, Path]:
-    """Return a mapping of friendly labels to CSV file paths bundled with the repo."""
+old_raw, new_raw = pd.read_csv(f_old), pd.read_csv(f_new)
+old, new = preprocess(old_raw, "Old"), preprocess(new_raw, "New")
 
-    repo_root = Path(__file__).resolve().parents[1]
-    candidate_dirs = [repo_root, repo_root / "data", repo_root / "datasets"]
-    sessions: "OrderedDict[str, Path]" = OrderedDict()
-    for directory in candidate_dirs:
-        if not directory.exists():
-            continue
-        for path in sorted(directory.glob("*.csv")):
-            label = path.stem
-            suffix = 1
-            unique_label = label
-            while unique_label in sessions:
-                suffix += 1
-                unique_label = f"{label} ({suffix})"
-            sessions[unique_label] = path
-    return sessions
+# --- Sidebar filters (players, clubs, iqr, etc.) — same as before but ONLY filtering here ---
+st.sidebar.header("Filters")
+players = sorted(set(old.get("Player", pd.Series()).dropna()).union(new.get("Player", pd.Series()).dropna()))
+clubs   = sorted(set(old.get("Club Type", pd.Series()).dropna()).union(new.get("Club Type", pd.Series()).dropna()))
+sel_players = st.sidebar.multiselect("Player", players, default=players)
+sel_clubs   = st.sidebar.multiselect("Club Type", clubs, default=clubs)
+apply_iqr   = st.sidebar.checkbox("Apply IQR filter (3× IQR)", True)
 
+def _apply_filters(df):
+    if sel_players and "Player" in df.columns:
+        df = df[df["Player"].isin(sel_players)]
+    if sel_clubs and "Club Type" in df.columns:
+        df = df[df["Club Type"].isin(sel_clubs)]
+    return df
 
-def _load_session(selection: SessionSelection) -> pd.DataFrame:
-    """Load and preprocess a session given the user's selection."""
+old_f, new_f = _apply_filters(old), _apply_filters(new)
+if apply_iqr:
+    iqr_cols = [c for c in ["Club Speed","Ball Speed","Smash Factor","Spin Rate","Carry Distance","Total Distance","|Carry Dev|","|Total Dev|"] if c in old_f.columns]
+    old_f, new_f = iqr_filter(old_f, iqr_cols), iqr_filter(new_f, iqr_cols)
 
-    if selection.source is None:
-        return pd.DataFrame()
+# --- Balancing
+st.sidebar.header("Sample-size standardisation")
+std_enable = st.sidebar.checkbox("Standardise shot counts", False)
+std_mode   = st.sidebar.selectbox("Mode", ["Simple", "Stratified: Club Type + Side"], 1)
+std_seed   = st.sidebar.number_input("Random seed", value=42, step=1)
+old_b, new_b = balance_samples(old_f, new_f, std_enable, std_mode, int(std_seed))
 
-    if isinstance(selection.source, Path):
-        raw = load_csv(str(selection.source))
+# --- Counts
+cA, cB, cC = st.columns(3)
+with cA: st.metric("Old (filtered)", value=f"{len(old_f):,}")
+with cB: st.metric("New (filtered)", value=f"{len(new_f):,}")
+with cC: st.metric("Used in analysis", value=f"{len(old_b):,} vs {len(new_b):,}")
+
+# --- Descriptives + KPI table/tiles
+old_desc = describe_session(old_b, KEY_METRICS)
+new_desc = describe_session(new_b, KEY_METRICS)
+
+# KPIs to show (you can import from config)
+kpi_list = ["Club Speed","Ball Speed","Smash Factor","Carry Distance"]
+acc = "|Total Dev|" if "|Total Dev|" in old_b.columns and "|Total Dev|" in new_b.columns else ("|Carry Dev|" if "|Carry Dev|" in old_b.columns and "|Carry Dev|" in new_b.columns else None)
+if acc: kpi_list.append(acc)
+
+kpi_map = kpi_series_for_metrics(old_desc, new_desc, kpi_list)
+st.subheader("Session KPIs")
+render_kpi_tiles(kpi_map, max_cols=5)
+
+# --- Comparison table
+delta = compare_sessions(old_desc, new_desc)
+if not delta.empty:
+    render_table("Session comparison", delta.rename(columns={
+        "mean_old":"Old mean","mean_new":"New mean","delta":"Δ mean","pct_change":"% change","improvement_sign":"Improved?"
+    }), height=360)
+else:
+    st.info("Not enough overlapping metrics to compute deltas.")
+
+# --- Plot tabs (figures from plots.py)
+st.subheader("Interactive charts")
+tabs = st.tabs(["Scatter","Histograms","Boxplots","Shot table","Groups","Left/Right"])
+combined = pd.concat([old_b.assign(Session="Old"), new_b.assign(Session="New")], ignore_index=True)
+
+with tabs[0]:
+    metric_opts = [m for m in KEY_METRICS if m in combined.columns]
+    if len(metric_opts) >= 2:
+        cX, cY, cC = st.columns(3)
+        with cX: x = st.selectbox("X-axis", metric_opts, 0)
+        with cY: y = st.selectbox("Y-axis", metric_opts, 1)
+        with cC: colour = st.selectbox("Colour by", [c for c in ["Session","Group","Side"] if c in combined.columns], 0)
+        fig = plots.scatter(combined, x=x, y=y, color_by=colour,
+                            hover_cols=["Date_parsed","Player","Club Type","Club Name","Group","Side"])
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        uploaded = selection.source
-        if hasattr(uploaded, "seek"):
-            uploaded.seek(0)
-        raw = pd.read_csv(uploaded, encoding="utf-8-sig")
-    label = selection.label or "Session"
-    return preprocess(raw, label)
+        st.info("Select CSVs with more numeric metrics to plot scatter.")
 
+with tabs[1]:
+    if metric_opts:
+        metric_hist = st.selectbox("Histogram metric", metric_opts, 0, key="hist")
+        bins = st.slider("Bins", 10, 80, 30, 5)
+        st.plotly_chart(plots.histogram(combined, metric_hist, bins=bins), use_container_width=True)
 
-def _apply_processing(df: pd.DataFrame, config: dict) -> pd.DataFrame:
-    processed = df.copy()
-    if processed.empty:
-        return processed
+with tabs[2]:
+    acc_col = "|Total Dev|" if "|Total Dev|" in combined.columns else ("|Carry Dev|" if "|Carry Dev|" in combined.columns else None)
+    if acc_col:
+        st.plotly_chart(plots.box_deviation(combined, acc_col, ytitle=f"{acc_col} (distance units)"), use_container_width=True)
+    else:
+        st.info("No deviation columns for boxplot.")
 
-    if config.get("classify_side"):
-        processed = add_side_column(
-            processed,
-            config.get("primary_deviation_col", "Carry Deviation Angle"),
-            config.get("dead_zone", 2.0),
-            config.get("handed", "Right-handed"),
-            config.get("invert", False),
-        )
+with tabs[3]:
+    show_cols = [c for c in ["Session","Date_parsed","Player","Club Type","Club Name","Club Speed","Ball Speed","Smash Factor","Launch Angle","Spin Rate","Carry Distance","Total Distance","Side","Group","|Carry Dev|","|Total Dev|"] if c in combined.columns]
+    render_table("Balanced shots (first 1,000 rows)", combined[show_cols].head(1000), height=420) if show_cols else st.info("No columns to show.")
 
-    if config.get("apply_iqr"):
-        cols = config.get("iqr_columns") or KEY_METRICS
-        processed = iqr_filter(processed, cols, whisker=config.get("iqr_whisker", 3.0))
-    return processed
+with tabs[4]:
+    if "Group" in combined.columns:
+        cnt = (combined.pivot_table(index="Group", columns="Session", values=combined.columns[0], aggfunc="count").fillna(0).astype(int)
+               .reset_index().rename_axis(None, axis=1))
+        render_table("Group counts", cnt, height=220)
+        y_metric = st.selectbox("Group boxplot metric", [m for m in ["Carry Distance","Total Distance","|Carry Dev|","|Total Dev|"] if m in combined.columns], 0)
+        st.plotly_chart(plots.group_box(combined, y_metric), use_container_width=True)
+    else:
+        st.info("Enable rule-based grouping if you want this tab.")
 
-
-def _summarise_sessions(
-    old_df: pd.DataFrame,
-    new_df: pd.DataFrame,
-    *,
-    config: dict,
-) -> tuple[
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-]:
-    """Return processed, balanced, and descriptive statistics for both sessions."""
-
-    old_processed = _apply_processing(old_df, config)
-    new_processed = _apply_processing(new_df, config)
-
-    balanced_old, balanced_new = balance_samples(
-        old_processed,
-        new_processed,
-        config.get("balance", False),
-        config.get("balance_mode", "Simple"),
-        config.get("balance_seed", 42),
-    )
-
-    old_desc = describe_session(balanced_old)
-    new_desc = describe_session(balanced_new)
-    comparison = compare_sessions(old_desc, new_desc)
-
-    return (
-        old_processed,
-        new_processed,
-        balanced_old,
-        balanced_new,
-        old_desc,
-        new_desc,
-        comparison,
-    )
-
-
-def _render_results(
-    selections: Mapping[str, SessionSelection],
-    *,
-    raw_old: pd.DataFrame,
-    raw_new: pd.DataFrame,
-    old_processed: pd.DataFrame,
-    new_processed: pd.DataFrame,
-    balanced_old: pd.DataFrame,
-    balanced_new: pd.DataFrame,
-    old_desc: pd.DataFrame,
-    new_desc: pd.DataFrame,
-    comparison: pd.DataFrame,
-) -> None:
-    baseline_label = selections["baseline"].label or "Baseline"
-    comparison_label = selections["comparison"].label or "Comparison"
-
-    counts_table = make_shot_count_table(
-        old_label=baseline_label,
-        new_label=comparison_label,
-        raw_old=len(raw_old),
-        raw_new=len(raw_new),
-        processed_old=len(old_processed),
-        processed_new=len(new_processed),
-        balanced_old=len(balanced_old),
-        balanced_new=len(balanced_new),
-    )
-    render_table("Shot counts", counts_table)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        render_table(
-            f"{baseline_label} summary",
-            make_session_summary_table(old_desc),
-        )
-    with col2:
-        render_table(
-            f"{comparison_label} summary",
-            make_session_summary_table(new_desc),
-        )
-
-    render_table(
-        "Session comparison",
-        make_comparison_table(
-            comparison,
-            old_label=baseline_label,
-            new_label=comparison_label,
-        ),
-    )
-
-    combined = pd.concat([balanced_old, balanced_new], ignore_index=True)
-    shot_table = make_shot_table(combined, metrics=SHOT_TABLE_METRICS, limit=1000)
-    render_table("Balanced shots (first 1,000 rows)", shot_table, height=420)
-    st.caption(
-        "Use the sidebar to adjust filters. Only the first 1,000 balanced shots are shown "
-        "for performance reasons."
-    )
-
-
-def run() -> None:
-    """Entry-point for Streamlit."""
-
-    st.set_page_config(page_title="SwingDash", page_icon="🏌️", layout="wide")
-    render_app_header()
-
-    available_sessions = _discover_default_sessions()
-    selections = render_sidebar_session_inputs(available_sessions)
-    config = render_sidebar_filters(KEY_METRICS)
-
-    raw_baseline = _load_session(selections["baseline"])
-    raw_comparison = _load_session(selections["comparison"])
-
-    if raw_baseline.empty or raw_comparison.empty:
-        st.info("Select or upload two sessions to begin the analysis.")
-        return
-
-    (
-        processed_baseline,
-        processed_comparison,
-        balanced_baseline,
-        balanced_comparison,
-        baseline_desc,
-        comparison_desc,
-        comparison,
-    ) = _summarise_sessions(
-        raw_baseline,
-        raw_comparison,
-        config=config,
-    )
-
-    if processed_baseline.empty:
-        st.warning(f"No data remains for {selections['baseline'].label} after applying the filters.")
-        return
-    if processed_comparison.empty:
-        st.warning(
-            f"No data remains for {selections['comparison'].label} after applying the filters."
-        )
-        return
-
-    _render_results(
-        selections,
-        raw_old=raw_baseline,
-        raw_new=raw_comparison,
-        old_processed=processed_baseline,
-        new_processed=processed_comparison,
-        balanced_old=balanced_baseline,
-        balanced_new=balanced_comparison,
-        old_desc=baseline_desc,
-        new_desc=comparison_desc,
-        comparison=comparison,
-    )
-
-    
-def main() -> None:
-    run()
-
-if __name__ == "__main__":
-    main()
+with tabs[5]:
+    if "Side" in combined.columns:
+        cnt = (combined.groupby(["Session","Side"]).size().reset_index(name="Count"))
+        st.plotly_chart(plots.bar_side_counts(cnt), use_container_width=True)
+        if {"Club Face","Club Path"}.issubset(combined.columns):
+            st.plotly_chart(plots.scatter_face_vs_path(combined), use_container_width=True)
+        metric = st.selectbox("Box metric", [c for c in ["Club Face","Club Path","Face to Path","Attack Angle","Spin Axis"] if c in combined.columns], 2)
+        st.plotly_chart(plots.box_by_side(combined, metric), use_container_width=True)
+    else:
+        st.info("No 'Side' column available.")

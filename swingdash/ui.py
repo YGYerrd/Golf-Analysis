@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 
 import streamlit as st
+import pandas as pd
+
 
 try:  # pragma: no cover - streamlit is optional during type-checking
     from streamlit.runtime.uploaded_file_manager import UploadedFile  # type: ignore
@@ -22,6 +24,26 @@ class SessionSelection:
     label: str
     source: Optional[SessionSource]
 
+
+def render_table(title: str, df: pd.DataFrame, height: int | None = None):
+    if title:
+        st.markdown(f"**{title}**")
+    kwargs = {"use_container_width": True}
+    if isinstance(height, int):
+        kwargs["height"] = height
+    st.dataframe(df, **kwargs)
+
+def render_kpi_tiles(kpi_map: dict[str, dict[str, float]], max_cols: int = 5):
+    metrics = list(kpi_map.keys())[:max_cols]
+    cols = st.columns(len(metrics))
+    for col, name in zip(cols, metrics):
+        rec = kpi_map[name]
+        with col:
+            st.metric(
+                name,
+                value=f'{rec["new"]:.2f}',
+                delta=f'{rec["delta"]:+.2f} ({rec["pct"]:+.1f}%)'
+            )
 
 def render_app_header() -> None:
     """Render the main title and description for the app."""
