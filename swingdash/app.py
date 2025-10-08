@@ -8,18 +8,18 @@ from typing import Mapping
 import pandas as pd
 import streamlit as st
 
-from .analytics import compare_sessions, describe_session
-from .cleaning import add_side_column, iqr_filter, load_csv, preprocess
-from .config import KEY_METRICS
-from .plots import (
+from swingdash.analytics import compare_sessions, describe_session
+from swingdash.cleaning import add_side_column, iqr_filter, load_csv, preprocess
+from swingdash.config import KEY_METRICS
+from swingdash.plots import (
     make_comparison_table,
     make_session_summary_table,
     make_shot_count_table,
     make_shot_table,
     render_table,
 )
-from .standardise import balance_samples
-from .ui import (
+from swingdash.standardise import balance_samples
+from swingdash.ui import (
     SessionSelection,
     render_app_header,
     render_sidebar_filters,
@@ -250,6 +250,9 @@ def run() -> None:
         comparison=comparison,
     )
 
-
-if __name__ == "__main__":  # pragma: no cover
+    
+def main() -> None:
     run()
+
+if __name__ == "__main__":
+    main()

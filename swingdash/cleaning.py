@@ -3,7 +3,8 @@ import re
 import pandas as pd
 import os
 import numpy as np
-from .config import CANDIDATE_NUMERIC, UNIT_PATTERNS
+from swingdash.config import CANDIDATE_NUMERIC, UNIT_PATTERNS
+
 
 _UNIT_RE = re.compile("|".join(UNIT_PATTERNS), flags=re.IGNORECASE)
 

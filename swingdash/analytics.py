@@ -1,8 +1,8 @@
 # swingdash/analytics.py
 import numpy as np
 import pandas as pd
-from typing import List
-from .config import KEY_METRICS, BETTER_DIRECTION
+from swingdash.config import KEY_METRICS, BETTER_DIRECTION
+
 
 def describe_session(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
